@@ -90,7 +90,7 @@ async def vision_query(
     # ❌ Reject only if both prompt and image are missing
     if not prompt.strip() and not b64img:
         return JSONResponse(status_code=400, content={
-            "results": [{"provider": "system", "answer": "Please provide at least an image or a prompt."}]
+            "results": [{"provider": "system", "answerj": "Please provide at least an image or a prompt."}]
         })
 
     # ✅ Process
