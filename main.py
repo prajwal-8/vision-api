@@ -71,16 +71,19 @@ async def fanout(b64img: str, prompt: str):
 
 @app.post("/vision-query")
 async def vision_query(
-    prompt: str = Form(...),
-    photo: Optional[UploadFile] = None
+    photo: Optional[UploadFile] = File(default=None),
+    prompt: str = Form(...)
 ):
-    if not prompt.strip():
-        return JSONResponse(status_code=400, content={"results": [{"provider": "system", "answer": "Prompt is required."}]})
-
     b64img = ""
     if photo is not None:
-        img_bytes = await photo.read()
-        b64img = base64.b64encode(img_bytes).decode()
+        try:
+            img_bytes = await photo.read()
+            b64img = base64.b64encode(img_bytes).decode()
+        except Exception as e:
+            return JSONResponse(status_code=400, content={"error": "Failed to read uploaded image."})
+
+    if not prompt.strip():
+        return JSONResponse(status_code=400, content={"results": [{"provider": "system", "answer": "Prompt is required."}]})
 
     results = await fanout(b64img, prompt)
     return JSONResponse(content={"results": results})
