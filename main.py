@@ -11,7 +11,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PPLX_API_KEY = os.getenv("PPLX_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# ---------- External Requests ----------
 
 async def oai_req(session, b64, prompt):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
@@ -24,8 +23,10 @@ async def oai_req(session, b64, prompt):
     try:
         async with session.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers) as r:
             res = await r.json()
-            return {"provider": "openai", "answer": res.get("choices", [{}])[0].get("message", {}).get("content", "OpenAI gave no response")}
-    except:
+            if "choices" not in res:
+                return {"provider": "openai", "answer": "OpenAI error: missing 'choices'"}
+            return {"provider": "openai", "answer": res["choices"][0]["message"]["content"]}
+    except Exception:
         return {"provider": "openai", "answer": "OpenAI failed to respond."}
 
 
@@ -37,8 +38,8 @@ async def pplx_req(session, b64, prompt):
     try:
         async with session.post("https://api.perplexity.ai/chat/completions", json=payload, headers=headers) as r:
             res = await r.json()
-            return {"provider": "perplexity", "answer": res.get("choices", [{}])[0].get("message", {}).get("content", "Perplexity gave no response")}
-    except:
+            return {"provider": "perplexity", "answer": res["choices"][0]["message"]["content"]}
+    except Exception:
         return {"provider": "perplexity", "answer": "Perplexity failed to respond."}
 
 
@@ -57,12 +58,11 @@ async def gemini_req(session, b64, prompt):
             headers=headers
         ) as r:
             res = await r.json()
-            return {"provider": "gemini", "answer": res.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "Gemini gave no response")}
-    except:
+            return {"provider": "gemini", "answer": res["candidates"][0]["content"]["parts"][0]["text"]}
+    except Exception:
         return {"provider": "gemini", "answer": "Gemini failed to respond."}
 
 
-# ---------- Fanout ----------
 async def fanout(b64img: str, prompt: str):
     async with aiohttp.ClientSession() as session:
         return await asyncio.gather(
@@ -72,27 +72,27 @@ async def fanout(b64img: str, prompt: str):
         )
 
 
-# ---------- Main Endpoint ----------
 @app.post("/vision-query")
 async def vision_query(
-    photo: Optional[UploadFile] = File(default=None),
-    prompt: Optional[str] = Form(default="")
+    prompt: Optional[str] = Form(default=""),
+    photo: Optional[UploadFile] = File(default=None)
 ):
     b64img = ""
 
-    # Handle image upload (if provided and valid)
-    if photo and getattr(photo, "filename", None):
+    # 🖼️ Handle image
+    if photo and getattr(photo, "filename", ""):
         try:
             img_bytes = await photo.read()
             b64img = base64.b64encode(img_bytes).decode()
-        except:
+        except Exception:
             return JSONResponse(status_code=400, content={"error": "Failed to read uploaded image."})
 
-    # Reject if both are completely empty
+    # ❌ Reject only if both prompt and image are missing
     if not prompt.strip() and not b64img:
         return JSONResponse(status_code=400, content={
             "results": [{"provider": "system", "answer": "Please provide at least an image or a prompt."}]
         })
 
+    # ✅ Process
     results = await fanout(b64img, prompt.strip())
     return JSONResponse(content={"results": results})
