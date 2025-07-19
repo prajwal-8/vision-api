@@ -2,11 +2,12 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import base64, asyncio, os, aiohttp
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Union
 
 load_dotenv()
 app = FastAPI()
 
+# Load API keys from .env
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PPLX_API_KEY = os.getenv("PPLX_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -17,20 +18,25 @@ async def oai_req(session, b64, prompt):
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
     }
+
+    content = [{"type": "text", "text": prompt}]
+    if b64:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+        })
+
     payload = {
         "model": "gpt-4o",
-        "messages": [
-            {"role": "user", "content": [
-                {"type": "text", "text": prompt}
-            ] + ([{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}] if b64 else [])}
-        ]
+        "messages": [{"role": "user", "content": content}]
     }
+
     try:
         async with session.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers) as r:
             res = await r.json()
             if 'choices' not in res:
                 print("OpenAI raw response:", res)
-                return {"provider": "openai", "answer": "OpenAI error: missing 'choices' field"}
+                return {"provider": "openai", "answer": "OpenAI error: missing 'choices'"}
             return {"provider": "openai", "answer": res['choices'][0]['message']['content']}
     except Exception as e:
         print("OpenAI exception:", e)
@@ -42,10 +48,7 @@ async def pplx_req(session, b64, prompt):
         "Authorization": f"Bearer {PPLX_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": "llava-1.5-13b",
-        "prompt": prompt,
-    }
+    payload = {"model": "llava-1.5-13b", "prompt": prompt}
     if b64:
         payload["images"] = [b64]
 
@@ -66,13 +69,18 @@ async def gemini_req(session, b64, prompt):
     headers = {
         "Content-Type": "application/json"
     }
+
     parts = [{"text": prompt}]
     if b64:
-        parts.append({"inlineData": {"mimeType": "image/jpeg", "data": b64}})
+        parts.append({
+            "inlineData": {
+                "mimeType": "image/jpeg",
+                "data": b64
+            }
+        })
+
     payload = {
-        "contents": [{
-            "parts": parts
-        }]
+        "contents": [{"parts": parts}]
     }
 
     try:
@@ -92,7 +100,7 @@ async def gemini_req(session, b64, prompt):
         return {"provider": "gemini", "answer": "Gemini failed to respond."}
 
 
-async def fanout(b64img, prompt):
+async def fanout(b64img: str, prompt: str):
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
             oai_req(session, b64img, prompt),
@@ -104,14 +112,22 @@ async def fanout(b64img, prompt):
 
 @app.post("/vision-query")
 async def vision_query(
-    photo: Optional[UploadFile] = File(None),
-    prompt: str = Form("What is in the image?")
+    prompt: str = Form(...),
+    photo: Optional[UploadFile] = File(None)
 ):
-    if photo is None:
-        b64img = ""
-    else:
-        img_bytes = await photo.read()
-        b64img = base64.b64encode(img_bytes).decode()
+    if not prompt.strip():
+        return JSONResponse(status_code=400, content={
+            "results": [{"provider": "system", "answer": "Prompt is required."}]
+        })
+
+    b64img = ""
+    if photo:
+        try:
+            img_bytes = await photo.read()
+            b64img = base64.b64encode(img_bytes).decode()
+        except Exception as e:
+            print("Image read error:", e)
+            return JSONResponse(status_code=400, content={"error": "Failed to read uploaded image."})
 
     results = await fanout(b64img, prompt)
-    return JSONResponse({"results": results})
+    return JSONResponse(content={"results": results})
