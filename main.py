@@ -12,20 +12,18 @@ PPLX_API_KEY = os.getenv("PPLX_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-async def oai_req(session, b64, prompt, chat_history):
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
+async def oai_req(session, b64, prompt, history):
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     messages = []
 
-    if chat_history:
-        try:
-            messages.extend(json.loads(chat_history))
-        except Exception:
-            pass
+    # Include previous history for OpenAI
+    for entry in history:
+        messages.append({"role": "user", "content": entry["prompt"]})
+        for res in entry["responses"]:
+            if res["provider"] == "openai":
+                messages.append({"role": "assistant", "content": res["answer"]})
 
+    # Add new prompt (with optional image)
     content = []
     if prompt:
         content.append({"type": "text", "text": prompt})
@@ -33,10 +31,7 @@ async def oai_req(session, b64, prompt, chat_history):
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
     messages.append({"role": "user", "content": content})
 
-    payload = {
-        "model": "gpt-4o",
-        "messages": messages
-    }
+    payload = {"model": "gpt-4o", "messages": messages}
 
     try:
         async with session.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers) as r:
@@ -83,12 +78,12 @@ async def gemini_req(session, b64, prompt):
         return {"provider": "gemini", "answer": "Gemini failed to respond."}
 
 
-async def fanout(b64img: str, prompt: str, selected_models: List[str], chat_history: Optional[str]):
+async def fanout(b64img: str, prompt: str, selected_models: List[str], history: List[dict]):
     async with aiohttp.ClientSession() as session:
         tasks = []
 
         if "openai" in selected_models:
-            tasks.append(oai_req(session, b64img, prompt, chat_history))
+            tasks.append(oai_req(session, b64img, prompt, history))
 
         if "perplexity" in selected_models:
             tasks.append(pplx_req(session, b64img, prompt))
@@ -104,10 +99,11 @@ async def vision_query(
     prompt: Optional[str] = Form(default=""),
     photo: Optional[UploadFile] = File(default=None),
     models: str = Form(default='["openai", "perplexity", "gemini"]'),
-    chat_history: Optional[str] = Form(default=None)
+    history: Optional[str] = Form(default="[]")
 ):
     b64img = ""
 
+    # 🖼️ Read image
     if photo and getattr(photo, "filename", ""):
         try:
             img_bytes = await photo.read()
@@ -115,6 +111,7 @@ async def vision_query(
         except Exception:
             return JSONResponse(status_code=400, content={"error": "Failed to read uploaded image."})
 
+    # ❌ Reject empty
     if not prompt.strip() and not b64img:
         return JSONResponse(status_code=400, content={
             "results": [{"provider": "system", "answer": "Please provide at least an image or a prompt."}]
@@ -125,5 +122,10 @@ async def vision_query(
     except Exception:
         selected_models = ["openai", "perplexity", "gemini"]
 
-    results = await fanout(b64img, prompt.strip(), selected_models, chat_history)
+    try:
+        parsed_history = json.loads(history)
+    except Exception:
+        parsed_history = []
+
+    results = await fanout(b64img, prompt.strip(), selected_models, parsed_history)
     return JSONResponse(content={"results": results})
