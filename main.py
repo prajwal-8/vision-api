@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
-from typing import Optional
-import base64, aiohttp, asyncio, os
+from typing import Optional, List
+import base64, aiohttp, asyncio, os, json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -63,19 +63,27 @@ async def gemini_req(session, b64, prompt):
         return {"provider": "gemini", "answer": "Gemini failed to respond."}
 
 
-async def fanout(b64img: str, prompt: str):
+async def fanout(b64img: str, prompt: str, selected_models: List[str]):
     async with aiohttp.ClientSession() as session:
-        return await asyncio.gather(
-            oai_req(session, b64img, prompt),
-            pplx_req(session, b64img, prompt),
-            gemini_req(session, b64img, prompt),
-        )
+        tasks = []
+
+        if "openai" in selected_models:
+            tasks.append(oai_req(session, b64img, prompt))
+
+        if "perplexity" in selected_models:
+            tasks.append(pplx_req(session, b64img, prompt))
+
+        if "gemini" in selected_models:
+            tasks.append(gemini_req(session, b64img, prompt))
+
+        return await asyncio.gather(*tasks)
 
 
 @app.post("/vision-query")
 async def vision_query(
     prompt: Optional[str] = Form(default=""),
-    photo: Optional[UploadFile] = File(default=None)
+    photo: Optional[UploadFile] = File(default=None),
+    models: str = Form(default='["openai", "perplexity", "gemini"]')  # Default: all
 ):
     b64img = ""
 
@@ -87,12 +95,15 @@ async def vision_query(
         except Exception:
             return JSONResponse(status_code=400, content={"error": "Failed to read uploaded image."})
 
-    # ❌ Reject only if both prompt and image are missing
     if not prompt.strip() and not b64img:
         return JSONResponse(status_code=400, content={
-            "results": [{"provider": "system", "answerj": "Please provide at least an image or a prompt."}]
+            "results": [{"provider": "system", "answer": "Please provide at least an image or a prompt."}]
         })
 
-    # ✅ Process
-    results = await fanout(b64img, prompt.strip())
+    try:
+        selected_models = json.loads(models)
+    except Exception:
+        selected_models = ["openai", "perplexity", "gemini"]
+
+    results = await fanout(b64img, prompt.strip(), selected_models)
     return JSONResponse(content={"results": results})
